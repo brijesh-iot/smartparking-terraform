@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+
+  CoreName:
+    Description: Greengrass Core name to be created.
+    Type: String
+    Default: smartparking
+
+  BranchName:
+    Description: CodeCommit branch name
+    Type: String
+    Default: master
+
+  RepositoryName:
+    Description: CodeComit repository name
+    Type: String
+    Default: angular-parking-app
+
+  PipelineArtifactsBucket:
+    Type: String
+    Description: Provide name of existing S3 bucket which will hold Code Artifacts.
+    Default: artifacts-817952536107-us-west-2
+
+  GitHubOwner:
+    Type: String
+    Description: Username of GiiHub Account
+
+Resources:
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${CoreName}-CodeBuildProject
+      ServiceRole: #!GetAtt CodeBuildServiceRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-CodeBuildServiceRoleArn"
+      Artifacts:
+        Type: CODEPIPELINE
+        Name: AngularParkingApp
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        #Image: "aws/codebuild/amazonlinux2-x86_64-standard:1.0"
+        Image: "aws/codebuild/standard:4.0"
+        EnvironmentVariables:
+          - Name: DEPLOY_BUCKET
+            Value: !Ref DeployBucket
+            Type: PLAINTEXT
+          - Name: DISTRIBUTION
+            Value: !Ref Distribution
+            Type: PLAINTEXT
+      Source:
+        Type: CODEPIPELINE
+        #BuildSpec: !Sub |
+      Tags:
+        - Key: "App"
+          Value: !Join ['-',['AngularParkingApp-CICD', !Ref BranchName]]
+
+
+  AngularParkingAppGitHubPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::ImportValue:
+          !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+      ArtifactStore:
+        Location: !Ref PipelineArtifactsBucket
+        Type: S3
+      RestartExecutionOnUpdate: true
+      Tags:
+        - Key: "App"
+          Value: !Join ['-',['AngularParkingApp-CICD', !Ref BranchName]]
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: '1'
+                Provider: GitHub
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Branch: !Ref BranchName
+                Repo: !Ref RepositoryName
+                PollForSourceChanges: false
+                OAuthToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+              OutputArtifacts:
+                - Name: MyApp
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              OutputArtifacts:
+                - Name: MyAppBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+
+  DeployBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      #WebsiteConfiguration:                 # Disabled as we want to expose app using CloudFront. S3 will be private
+      #  IndexDocument: index.html
+      Tags:
+        - Key: "App"
+          Value: !Join ['-',['AngularParkingApp-CICD', !Ref BranchName]]
+
+  DeployBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: DeployBucket
+      PolicyDocument:
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${WebsiteOriginAccessIdentity}"
+            Action:
+              - "s3:GetObject"
+            Resource: !Join ['', [!GetAtt DeployBucket.Arn, "/*"]]
+            Condition:
+              IpAddress:
+                aws:SourceIp:
+                - "99.77.78.149/32"
+                - "192.168.0.0/16"
+
+  WebsiteOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "access-identity-${DeployBucket}"
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt DeployBucket.DomainName
+          #- DomainName: !Sub "${DeployBucket}.s3-website-${AWS::Region}.amazonaws.com"
+          #- DomainName: !Select [2, !Split ["/", !GetAtt DeployBucket.WebsiteURL]]
+            Id: !Ref DeployBucket
+            S3OriginConfig:
+              #OriginAccessIdentity: ''
+              OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${WebsiteOriginAccessIdentity}"
+        DefaultRootObject: index.html
+        Enabled: true
+        DefaultCacheBehavior:
+          MinTTL: 86400
+          MaxTTL: 31536000
+          ForwardedValues:
+            QueryString: true
+          TargetOriginId: !Ref DeployBucket
+          ViewerProtocolPolicy: "redirect-to-https"
+      Tags:
+        - Key: "App"
+          Value: !Join ['-',['AngularParkingApp-CICD', !Ref BranchName]]
+
+
+  AngularAppGitHubPipelineWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: 'refs/heads/{Branch}'
+      TargetPipeline: !Ref AngularParkingAppGitHubPipeline
+      TargetAction: SourceAction
+      Name: AngularAppGitHubPipelineWebhook
+      TargetPipelineVersion: !GetAtt
+        - AngularParkingAppGitHubPipeline
+        - Version
+      RegisterWithThirdParty: true
+
+Outputs:
+  BucketName:
+    Value: !Ref DeployBucket
+    Description: Name of S3 bucket to hold website content
+  WebSiteURL:
+    Value: !GetAtt DeployBucket.WebsiteURL
+    Description: Website URL Link of ReactJS Front End application.
+  CloudfrontEndpoint:
+    Value: !GetAtt [Distribution, DomainName]
+    Description: Endpoint for Cloudfront distribution

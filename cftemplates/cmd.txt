@@ -1,0 +1,4 @@
+How to connect RDS from local pc?
+ssh -i smartparking.pem -NL 5000:smartparking.cs6hgb41mwmo.us-east-1.rds.amazonaws.com:3306 ubuntu@54.221.107.100 -v
+
+

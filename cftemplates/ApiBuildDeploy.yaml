@@ -1,0 +1,310 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creating AWS Code Build and Pipeline for deployment at IoT Core.
+
+Parameters:
+  CoreName:
+    Description: Greengrass Core name to be created.
+    Type: String
+    Default: smartparking
+
+  BuildComputeType:
+    Type: String
+    Description: Instance Type to use for build
+    Default: BUILD_GENERAL1_SMALL
+
+  BuildImagePython:
+    Type: String
+    Description: Docker image to use for build
+    Default: aws/codebuild/python:3.7.1
+
+  PipelineArtifactsBucket:
+    Type: String
+    Description: Provide name of existing S3 bucket which will hold Code Artifacts.
+    Default: artifacts-817952536107-us-west-2
+
+  IoTResourceS3Bucket:
+    Type: String
+    Description: Provide name of existing S3 bucket which will hold IoT resources like thing certificates.
+    Default: smartparking-iot-resources
+
+  IoTApiCodeRepoName:
+    Type: String
+    Description: Name of Existing Code repository in AWS CodeCommit for IoT Core
+    Default: api-repo
+
+  GitHubOwner:
+    Type: String
+    Description: Username of GiiHub Account
+
+  RepoType:
+    Description: Type of Code Repository to use.
+    Default: GitHub
+    Type: String
+    AllowedValues:
+      - GitHub
+      - AWS
+    ConstraintDescription: Must specify GitHub or AWS.
+
+Conditions:
+  CreateAWSRepository: !Equals [ !Ref RepoType, AWS ]
+  CreateGitHubRepository: !Equals [ !Ref RepoType, GitHub ]
+
+Resources:
+
+  ApiCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-code-project"
+      Artifacts:
+        Type: CODEPIPELINE
+      BadgeEnabled: False
+      Description: Build and Deploy
+      Environment:
+        ComputeType: !Ref BuildComputeType
+        Image: !Ref BuildImagePython
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: True
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: ARTIFACTS_BUCKET
+            Value: !Ref PipelineArtifactsBucket
+            Type: PLAINTEXT
+          - Name: IOT_RESOURCE_S3_BUCKET
+            Value: !Ref IoTResourceS3Bucket
+            Type: PLAINTEXT
+          - Name: CoreName
+            Value: !Ref CoreName
+            Type: PLAINTEXT
+      ServiceRole: #!GetAtt CodeBuildServiceRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-CodeBuildServiceRoleArn"
+      Source:
+        Type: CODEPIPELINE
+
+  GitHubApiCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateGitHubRepository
+    DependsOn: [ ApiCodeBuildProject ]
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+      RestartExecutionOnUpdate: true
+      RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+      Stages:
+      - Name: Get-APIs-code
+        Actions:
+        - Name: AWSCodeCommitRepo    # TODO: Configure this name in GitHub Webhook
+          ActionTypeId:
+            Category: Source
+            Owner: ThirdParty
+            Version: '1'
+            Provider: GitHub
+          Configuration:
+            Owner: !Ref GitHubOwner
+            Branch: master
+            Repo: !Ref IoTApiCodeRepoName
+            PollForSourceChanges: false
+            OAuthToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+          OutputArtifacts:
+            - Name: IoTApiSource
+          RunOrder: 1
+      - Name: Build-API-code
+        Actions:
+        - Name: Build
+          InputArtifacts:
+            - Name: IoTApiSource
+          OutputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: 1
+          Configuration:
+            ProjectName: !Ref ApiCodeBuildProject
+      - Name: Deploy-API-Code
+        Actions:
+        - Name: CreateChangeSet
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          InputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+          OutputArtifacts:
+            - Name: IoTApiSourceCodeDeploy
+          Configuration:
+            ActionMode: CHANGE_SET_REPLACE
+            Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+            ChangeSetName: changeset
+            OutputFileName: Output.json
+            StackName: !Sub "${CoreName}-api-deploy"
+            TemplatePath: !Sub "IoTApiSourceCodeBuild::packaged.yaml"
+            TemplateConfiguration: !Sub "IoTApiSourceCodeBuild::configuration.json"
+            RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+              Fn::ImportValue:
+                !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+          RunOrder: 1
+        - Name: ExecuteChangeSet
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          InputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+            - Name: IoTApiSourceCodeDeploy
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+            ChangeSetName: changeset
+            TemplateConfiguration: !Sub "IoTApiSourceCodeBuild::configuration.json"
+            ParameterOverrides: |
+              {
+                "CoreName" : { "Fn::GetParam" : ["IoTApiSourceCodeDeploy", "Output.json", "CoreName"] }
+              }
+            RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+              Fn::ImportValue:
+                !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+            StackName: !Sub "${CoreName}-api-deploy"
+          RunOrder: 2
+
+  GitHubApiCodePipelineWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Condition: CreateGitHubRepository
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: 'refs/heads/{Branch}'
+      TargetPipeline: !Ref GitHubApiCodePipeline
+      TargetAction: AWSCodeCommitRepo             # TODO: Configure this value from above Pipeline
+      Name: GitHubApiCodePipelineWebhook
+      TargetPipelineVersion: !GetAtt
+        - GitHubApiCodePipeline
+        - Version
+      RegisterWithThirdParty: true
+
+  ApiCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateAWSRepository
+    DependsOn: [ ApiCodeBuildProject ]
+    Properties:
+      ArtifactStore:
+        Type: S3
+        Location: !Ref PipelineArtifactsBucket
+      RestartExecutionOnUpdate: true
+      RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+      Stages:
+      - Name: Get-APIs-code
+        Actions:
+        - Name: AWSCodeCommitRepo
+          OutputArtifacts:
+            - Name: IoTApiSource
+          ActionTypeId:
+            Category: Source
+            Owner: AWS
+            Version: '1'
+            Provider: CodeCommit
+          Configuration:
+            BranchName: master
+            RepositoryName: !Ref IoTApiCodeRepoName
+            PollForSourceChanges: false
+          RunOrder: 1
+      - Name: Build-API-code
+        Actions:
+        - Name: Build
+          InputArtifacts:
+            - Name: IoTApiSource
+          OutputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+          ActionTypeId:
+            Category: Build
+            Owner: AWS
+            Provider: CodeBuild
+            Version: 1
+          Configuration:
+            ProjectName: !Ref ApiCodeBuildProject
+      - Name: Deploy-API-Code
+        Actions:
+        - Name: CreateChangeSet
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          InputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+          OutputArtifacts:
+            - Name: IoTApiSourceCodeDeploy
+          Configuration:
+            ActionMode: CHANGE_SET_REPLACE
+            Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+            ChangeSetName: changeset
+            OutputFileName: Output.json
+            StackName: !Sub "${CoreName}-api-deploy"
+            TemplatePath: !Sub "IoTApiSourceCodeBuild::packaged.yaml"
+            TemplateConfiguration: !Sub "IoTApiSourceCodeBuild::configuration.json"
+            RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+              Fn::ImportValue:
+                !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+          RunOrder: 1
+        - Name: ExecuteChangeSet
+          ActionTypeId:
+            Category: Deploy
+            Owner: AWS
+            Provider: CloudFormation
+            Version: '1'
+          InputArtifacts:
+            - Name: IoTApiSourceCodeBuild
+            - Name: IoTApiSourceCodeDeploy
+          Configuration:
+            ActionMode: CHANGE_SET_EXECUTE
+            Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+            ChangeSetName: changeset
+            TemplateConfiguration: !Sub "IoTApiSourceCodeBuild::configuration.json"
+            ParameterOverrides: |
+              {
+                "CoreName" : { "Fn::GetParam" : ["IoTApiSourceCodeDeploy", "Output.json", "CoreName"] }
+              }
+            RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+              Fn::ImportValue:
+                !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+            StackName: !Sub "${CoreName}-api-deploy"
+          RunOrder: 2
+
+  ApiEventRepoChangeOnMaster:
+    Type: AWS::Events::Rule
+    Condition: CreateAWSRepository
+    DependsOn: [ ApiCodeBuildProject ]
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${IoTApiCodeRepoName}"
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - master
+      Targets:
+        - Arn:
+            !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${ApiCodePipeline}"
+          RoleArn: #!GetAtt RoleEventsStartPipeline.Arn
+            Fn::ImportValue:
+              !Sub "${CoreName}-RoleEventsStartPipelineArn"
+          Id: !Sub "${CoreName}-EventRepoChangeOnMaster"

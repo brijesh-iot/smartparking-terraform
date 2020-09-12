@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: IoT Edge application
+
+Resources:
+
+  ParkingAlarmsWarnings:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: "AWS_PARKING_ALARMS_WARNINGS"
+      AttributeDefinitions:
+        - AttributeName: serial_number
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+        - AttributeName: alert_name
+          AttributeType: S
+        - AttributeName: state
+          AttributeType: S
+      KeySchema:
+        - AttributeName: serial_number
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      GlobalSecondaryIndexes:
+        - IndexName: "SERIAL-ALERT-NAME-index"
+          KeySchema:
+            - AttributeName: "serial_number"
+              KeyType: "HASH"
+            - AttributeName: "alert_name"
+              KeyType: "RANGE"
+          ProvisionedThroughput:
+            ReadCapacityUnits: "5"
+            WriteCapacityUnits: "5"
+          Projection:
+            ProjectionType: "ALL"
+        - IndexName: "SERIAL-STATE-index"
+          KeySchema:
+            - AttributeName: "serial_number"
+              KeyType: "HASH"
+            - AttributeName: "state"
+              KeyType: "RANGE"
+          ProvisionedThroughput:
+            ReadCapacityUnits: "5"
+            WriteCapacityUnits: "5"
+          Projection:
+            ProjectionType: "ALL"

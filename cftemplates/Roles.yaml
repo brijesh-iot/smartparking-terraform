@@ -1,0 +1,416 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Cloudformation template to create required roles used accrossed the services at each layer - edge, iot-core, api and frontend.
+
+Parameters:
+  CoreName:
+    Description: Greengrass Core name to be created. A "Thing" with be created with _Core appended to the name
+    Type: String
+    Default: smartparking
+
+Resources:
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        - arn:aws:iam::aws:policy/AWSIoTFullAccess
+      Policies:
+        - PolicyName: lambda-execution-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - greengrass:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeReservedInstancesOfferings
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:AttachRolePolicy
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:PassRole
+                Resource: '*'
+
+  GreengrassResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: greengrass.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: credentials.iot.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: iot.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGreengrassResourceAccessRolePolicy
+        - arn:aws:iam::aws:policy/AWSGreengrassFullAccess
+        - arn:aws:iam::aws:policy/AWSIoTFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerReadOnly
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSIoTLogging
+        - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSIoTRuleActions
+        - arn:aws:iam::aws:policy/service-role/AWSIoTThingsRegistration
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - sns:*
+                  - sqs:*
+                  - events:*
+                  - logs:*
+                  - iam:*
+                  - sagemaker:*
+                  - secretsmanager:*
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:ListRoles
+                  - iam:PassRole
+                Resource: "*"
+
+  IoTEventsServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - iot.amazonaws.com
+                - iotevents.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: IoTEventsExecutionPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:*"
+                  - "cloudwatch:*"
+                  - "sns:*"
+                  - "sqs:*"
+                  - "dynamodb:*"
+                  - "iotevents:*"
+                  - "events:*"
+                  - "iot:*"
+                  - "s3:*"
+                  - "lambda:*"
+                  - "autoscaling:Describe*"
+                  - "dynamodb:PutItem"
+                  - "kinesis:PutRecord"
+                  - "firehose:PutRecord"
+                  - "iam:GetPolicy"
+                  - "iam:GetPolicyVersion"
+                  - "iam:GetRole"
+                  - "iam:GetRolePolicy"
+                  - "iam:ListAttachedRolePolicies"
+                  - "iam:ListRolePolicies"
+                  - "iam:ListRoles"
+                  - "iam:PassRole"
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - "iam:PassRole"
+                Resource: "arn:aws:iam::*:role/AWS_Events_Invoke_Targets"
+              - Effect: Allow
+                Action:
+                  - "iam:CreateServiceLinkedRole"
+                Resource: "arn:aws:iam::*:role/aws-service-role/events.amazonaws.com/AWSServiceRoleForCloudWatchEvents*"
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: events.amazonaws.com
+
+  RoleEventsStartPipeline:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: cwe-pipeline-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:*"
+
+  BuildAndDeployPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+      Path: /
+      Policies:
+        - PolicyName: CodePipelineAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Action:
+                  - 'sns:*'
+                  - 'codecommit:*'
+                  - 'codebuild:*'
+                  - 'codepipeline:*'
+                  - 's3:*'
+                  - 'apigateway:*'
+                Effect: Allow
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        - arn:aws:iam::aws:policy/AWSIoTFullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
+        - arn:aws:iam::aws:policy/AWSIoTEventsFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeDeployFullAccess
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: code-build-service-role
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "*"
+                Resource: "*"
+
+  ApiGatewayServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  MySqlDdRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+
+  EdgeLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSLambdaFullAccess
+        - arn:aws:iam::aws:policy/AWSIoTFullAccess
+      Policies:
+        - PolicyName: lambda-execution-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - greengrass:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeReservedInstancesOfferings
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:AttachRolePolicy
+                  - iam:GetRole
+                  - iam:DeleteRole
+                  - iam:PassRole
+                Resource: '*'
+
+  EC2InstanceRoleWithSsm:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: InstanceRolePolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'logs:*'
+                - 's3:*'
+              Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+Outputs:
+
+  LambdaExecutionRoleArn:
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-LambdaExecutionArn"
+
+  GreengrassResourceRoleArn:
+    Value: !GetAtt GreengrassResourceRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-GreengrassResourceRoleArn"
+
+  IoTEventsServiceRoleArn:
+    Value: !GetAtt IoTEventsServiceRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-IoTEventsServiceRoleArn"
+
+  RoleEventsStartPipelineArn:
+    Value: !GetAtt RoleEventsStartPipeline.Arn
+    Export:
+      Name: !Sub "${CoreName}-RoleEventsStartPipelineArn"
+
+  BuildAndDeployPipelineRoleArn:
+    Value: !GetAtt BuildAndDeployPipelineRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+
+  CodeBuildServiceRoleArn:
+    Value: !GetAtt CodeBuildServiceRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-CodeBuildServiceRoleArn"
+
+  ApiGatewayServiceRoleArn:
+    Value: !GetAtt ApiGatewayServiceRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-ApiGatewayServiceRoleArn"
+
+  MySqlDdRoleArn:
+    Value: !GetAtt MySqlDdRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-MySqlDdRoleArn"
+
+  EdgeLambdaExecutionRoleArn:
+    Value: !GetAtt EdgeLambdaExecutionRole.Arn
+    Export:
+      Name: !Sub "${CoreName}-EdgeLambdaExecutionRoleArn"
+
+  EC2InstanceRoleWithSsmArn:
+    Value: !GetAtt EC2InstanceRoleWithSsm.Arn
+    Export:
+      Name: !Sub "${CoreName}-EC2InstanceRoleWithSsmArn"
+
+  EC2InstanceRoleWithSsm:
+    Value: !Ref EC2InstanceRoleWithSsm
+    Export:
+      Name: !Sub "${CoreName}-EC2InstanceRoleWithSsm"

@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creating EC2 instance for Greengrass along with Greengrass Core setup with group.
+
+Parameters:
+
+  CoreName:
+    Description: Greengrass Core name to be created. A "Thing" with be created with _Core appended to the name
+    Type: String
+    Default: smartparking
+
+  MyKeyPair:
+    Description: Amazon EC2 Key Pair for accessing Greengrass Core instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: smartparking
+
+  InstanceType:
+    Description: Greengrass EC2 instance size
+    Type: String
+    Default: t3.micro
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      "HVM": "ami-0565af6e282977273" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-01652280c5135f94b" #"ami-04f61a84c2ef9bb03" # Windows Server 2019 base
+      "Ignition": "ami-01652280c5135f94b" #"ami-05ce2673f3daa9fc9" # Windows Server 2019 base
+    us-east-2:
+      "HVM": "ami-0e7589a8422e3270f" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-08db69d5de9dc9245" #"ami-04f61a84c2ef9bb03" # Windows Server 2019 base
+      "Ignition": "ami-08db69d5de9dc9245" #"ami-05ce2673f3daa9fc9" # Windows Server 2019 base
+    us-west-2:
+      "HVM": "ami-08692d171e3cf02d6" # "ami-0565af6e282977273" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-0791882722a752013" #"ami-04f61a84c2ef9bb03" # Microsoft Windows Server 2019 Base with Containers
+      "Ignition": "ami-0791882722a752013" #"ami-05ce2673f3daa9fc9" # Microsoft Windows Server 2019 Base with Containers
+
+Resources:
+
+  SimulatorInstance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", HVM]
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref MyKeyPair
+      IamInstanceProfile: !Ref SimulationRoleInstanceProfile
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-GGSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ "DeviceSimulator", !Ref CoreName] ]
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "${CoreName}-PrivateSubnet1"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          export DEBIAN_FRONTEND=noninteractive
+          apt update -y
+          apt upgrade -y
+          apt install python-minimal python-pip -y
+          apt-get update -y
+          apt-get install -y python-setuptools
+          sudo apt install openjdk-8-jdk -y
+          sudo apt-get install curl
+          curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
+          sudo apt-get install nodejs
+          pip install greengrasssdk
+          pip install AWSIoTPythonSDK
+          sudo apt-get install unzip
+          sudo curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          sudo unzip awscliv2.zip
+          sudo ./aws/install
+
+
+  SimulationRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-EC2InstanceRoleWithSsm"

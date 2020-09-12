@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creating AWS Code Build and Pipeline for deployment at Edge.
+
+Parameters:
+
+  CoreName:
+    Description: Greengrass Core name to be created. A "Thing" with be created with _Core appended to the name
+    Type: String
+    Default: smartparking
+
+  EdgeCodeRepoName:
+    Description: Edge Code Repository
+    Type: String
+    Default: edge-repo
+
+  BuildComputeType:
+    Type: String
+    Description: Instance Type to use for build
+    Default: BUILD_GENERAL1_SMALL
+
+  BuildImagePython:
+    Type: String
+    Description: Docker image to use for build
+    Default: aws/codebuild/python:3.7.1
+
+  PipelineArtifactsBucket:
+    Type: String
+    Description: Provide name of existing S3 bucket which will hold Code Artifacts.
+    Default: smartparking-artifacts
+
+  IoTResourceS3Bucket:
+    Type: String
+    Description: Provide name of existing S3 bucket which will hold IoT resources like thing certificates.
+    Default: smartparking-iot-resources-v1
+
+  GitHubOwner:
+    Type: String
+    Description: Username of GiiHub Account
+
+  RepoType:
+    Description: Type of Code Repository to use.
+    Default: GitHub
+    Type: String
+    AllowedValues:
+      - GitHub
+      - AWS
+    ConstraintDescription: Must specify GitHub or AWS.
+
+Conditions:
+  CreateAWSRepository: !Equals [ !Ref RepoType, AWS ]
+  CreateGitHubRepository: !Equals [ !Ref RepoType, GitHub ]
+
+Resources:
+
+  EdgeCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-edge-code-project"
+      Artifacts:
+        Type: CODEPIPELINE
+      BadgeEnabled: False
+      Description: Build and Deploy
+      Environment:
+        ComputeType: !Ref BuildComputeType
+        Image: !Ref BuildImagePython
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: True
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: ARTIFACTS_BUCKET
+            Value: !Ref PipelineArtifactsBucket
+            Type: PLAINTEXT
+          - Name: IOT_RESOURCE_S3_BUCKET
+            Value: !Ref IoTResourceS3Bucket
+            Type: PLAINTEXT
+          - Name: CoreName
+            Value: !Ref CoreName
+            Type: PLAINTEXT
+      ServiceRole: #!GetAtt CodeBuildServiceRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-CodeBuildServiceRoleArn"
+      Source:
+        Type: CODEPIPELINE
+
+  GitHubEdgeCodeDeployPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateGitHubRepository
+    DependsOn: [ EdgeCodeBuildProject ]
+    Properties:
+      ArtifactStore:
+        Location: !Ref PipelineArtifactsBucket
+        Type: S3
+      RestartExecutionOnUpdate: True
+      RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+      Stages:
+        - Name: PullSource
+          Actions:
+            - Name: PullSource
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Branch: master
+                Repo: !Ref EdgeCodeRepoName
+                OAuthToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+                PollForSourceChanges: false      
+              OutputArtifacts:
+                - Name: "PullFromSourceBranch-master"
+        - Name: CodeBuildAndDeployStage
+          Actions:
+            - Name: BuildAndDeploy
+              InputArtifacts:
+                - Name: "PullFromSourceBranch-master"
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref EdgeCodeBuildProject
+
+  GitHubPipelineWebhook:
+    Type: 'AWS::CodePipeline::Webhook'
+    Properties:
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration:
+        SecretToken: '{{resolve:secretsmanager:AwsSmartparkingGithubToken:SecretString:AwsSmartparkingGithubToken}}'
+      Filters:
+        - JsonPath: $.ref
+          MatchEquals: 'refs/heads/{Branch}'
+      TargetPipeline: !Ref GitHubEdgeCodeDeployPipeline
+      TargetAction: PullSource
+      Name: GitHubPipelineWebhook
+      TargetPipelineVersion: !GetAtt
+        - GitHubEdgeCodeDeployPipeline
+        - Version
+      RegisterWithThirdParty: true
+
+  EdgeCodeDeployPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Condition: CreateAWSRepository
+    DependsOn: [ EdgeCodeBuildProject ]
+    Properties:
+      ArtifactStore:
+        Location: !Ref PipelineArtifactsBucket
+        Type: S3
+      RestartExecutionOnUpdate: True
+      RoleArn: #!GetAtt BuildAndDeployPipelineRole.Arn
+        Fn::ImportValue:
+          !Sub "${CoreName}-BuildAndDeployPipelineRoleArn"
+      Stages:
+        - Name: PullSource
+          Actions:
+            - Name: PullSource
+              OutputArtifacts:
+                - Name: "PullFromSourceBranch-master"
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              Configuration:
+                BranchName: master
+                RepositoryName: !Ref EdgeCodeRepoName
+                PollForSourceChanges: false
+        - Name: CodeBuildAndDeployStage
+          Actions:
+            - Name: BuildAndDeploy
+              InputArtifacts:
+                - Name: "PullFromSourceBranch-master"
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref EdgeCodeBuildProject
+
+
+# Auto Trigger of Build & Deploy for AWS CodeCommit repository
+
+  EdgeRepoChangeOnMaster:
+    Type: AWS::Events::Rule
+    Condition: CreateAWSRepository
+    DependsOn: [ EdgeCodeBuildProject ]
+    Properties:
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - 'CodeCommit Repository State Change'
+        resources:
+          - !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${EdgeCodeRepoName}"
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - master
+      Targets:
+        - Arn:
+            !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${EdgeCodeDeployPipeline}"
+          RoleArn: #!GetAtt RoleEventsStartPipeline.Arn
+            Fn::ImportValue:
+              !Sub "${CoreName}-RoleEventsStartPipelineArn"
+          Id: !Sub "${CoreName}-EdgeRepoChangeOnMaster"
+
+
+#Error: 
+# TES Service Role is not associated with this account. Do First deploy manually and it will be added at account level for future deployments.
+# AWS IoT Greengrass works with other AWS services, such as AWS IoT and AWS Lambda. Greengrass needs your permission to access these services and read and write data on your behalf. Learn more
+# 
+# When you grant permission, Greengrass does the following:
+# - Creates a service role named Greengrass_ServiceRole, if one doesn't exist, and attaches the AWSGreengrassResourceAccessRolePolicy managed policy to the role.
+# - Attaches the service role to your AWS account in the AWS Region that's currently selected in the console.
+# 
+# This step is required only once in each AWS Region where you use Greengrass.
+
+#Error:
+# Greengrass is not authorized to assume the Service Role associated with this account.

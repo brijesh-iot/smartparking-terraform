@@ -1,0 +1,451 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creating EC2 instance for Greengrass along with Greengrass Core setup with group.
+
+Parameters:
+  CoreName:
+    Description: Greengrass Core name to be created. A "Thing" with be created with _Core appended to the name
+    Type: String
+    Default: smartparking
+
+  MyKeyPair:
+    Description: Amazon EC2 Key Pair for accessing Greengrass Core instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: smartparking
+
+  LambdaExecutionRoleArn:
+    Description: Lambda execution role.
+    Type: String
+
+  GreengrassResourceRoleArn:
+    Description: Greengrass service role.
+    Type: String
+
+  GGInstanceType:
+    Description: Greengrass EC2 instance size
+    Type: String
+    Default: t3.micro
+
+  KepwareInstanceType:
+    Description: Kepware EC2 instance size
+    Type: String
+    Default: t2.large
+
+  IgnitionInstanceType:
+    Description: Ignition EC2 instance size
+    Type: String
+    Default: t2.large
+
+  EnvType:
+    Description: Environment type.
+    Default: test
+    Type: String
+    AllowedValues:
+      - prod
+      - test
+    ConstraintDescription: must specify prod or test.
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      "HVM": "ami-0565af6e282977273" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-01652280c5135f94b" #"ami-04f61a84c2ef9bb03" # Windows Server 2019 base
+      "Ignition": "ami-01652280c5135f94b" #"ami-05ce2673f3daa9fc9" # Windows Server 2019 base
+    us-east-2:
+      "HVM": "ami-0e7589a8422e3270f" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-08db69d5de9dc9245" #"ami-04f61a84c2ef9bb03" # Windows Server 2019 base
+      "Ignition": "ami-08db69d5de9dc9245" #"ami-05ce2673f3daa9fc9" # Windows Server 2019 base
+    us-west-2:
+      "HVM": "ami-08692d171e3cf02d6" # "ami-0565af6e282977273" # ubuntu/images/hvm-ssd/ubuntu-xenial-16.04-amd64-server-20190212
+      "Kepware": "ami-0791882722a752013" #"ami-04f61a84c2ef9bb03" # Microsoft Windows Server 2019 Base with Containers
+      "Ignition": "ami-0791882722a752013" #"ami-05ce2673f3daa9fc9" # Microsoft Windows Server 2019 Base with Containers
+
+Conditions: 
+  CreateProdResources: !Equals [ !Ref EnvType, prod ]
+
+Resources:
+
+  GreengrassGroup:
+    Type: AWS::Greengrass::Group
+    Properties:
+      Name: !Ref CoreName
+      #RoleArn: !GetAtt GreengrassResourceRole.Arn
+      RoleArn: !Ref GreengrassResourceRoleArn
+
+
+  KepwareInstance:
+    Type: "AWS::EC2::Instance"
+    Condition: CreateProdResources
+    DependsOn: GreengrassGroup
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Kepware]
+      InstanceType: !Ref KepwareInstanceType
+      KeyName: !Ref MyKeyPair
+      IamInstanceProfile: !Ref InstanceRoleInstanceProfile
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-EdgeGatewaySecurityGroup"
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "${CoreName}-PublicSubnet1"
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ "Kepware", !Ref CoreName] ]
+
+
+  IgnitionInstance:
+    Type: "AWS::EC2::Instance"
+    Condition: CreateProdResources
+    DependsOn: GreengrassGroup
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ignition]
+      InstanceType: !Ref IgnitionInstanceType
+      KeyName: !Ref MyKeyPair
+      IamInstanceProfile: !Ref InstanceRoleInstanceProfile
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-EdgeGatewaySecurityGroup"
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "${CoreName}-PublicSubnet1"
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ "Ignition", !Ref CoreName] ]
+
+
+  GreengrassInstance:
+    Type: "AWS::EC2::Instance"
+    DependsOn: GreengrassGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT20M
+        Count: '1'
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          full_install:
+            - install_and_enable_cfn_hup
+        install_and_enable_cfn_hup:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Join
+                - ''
+                - - |
+                    [main]
+                  - stack=
+                  - !Ref 'AWS::StackId'
+                  - |+
+                  - region=
+                  - !Ref 'AWS::Region'
+                  - |+
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Join
+                - ''
+                - - |
+                    [cfn-auto-reloader-hook]
+                  - |
+                    triggers=post.update
+                  - >
+                    path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - '         --stack '
+                  - !Ref 'AWS::StackName'
+                  - '         --resource WebServerInstance '
+                  - '         --configsets InstallAndRun '
+                  - '         --region '
+                  - !Ref 'AWS::Region'
+                  - |+
+                  - |
+                    runas=root
+            /lib/systemd/system/cfn-hup.service:
+              content: !Join
+                - ''
+                - - |
+                    [Unit]
+                  - |+
+                    Description=cfn-hup daemon
+                  - |
+                    [Service]
+                  - |
+                    Type=simple
+                  - |
+                    ExecStart=/opt/aws/bin/cfn-hup
+                  - |+
+                    Restart=always
+                  - |
+                    [Install]
+                  - WantedBy=multi-user.target
+          commands:
+            01enable_cfn_hup:
+              command: systemctl enable cfn-hup.service
+            02start_cfn_hup:
+              command: systemctl start cfn-hup.service
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", HVM]
+      InstanceType: !Ref GGInstanceType
+      KeyName: !Ref MyKeyPair
+      #SecurityGroupIds: !Split [",", !GetAtt GGSecurityGroup.GroupId]
+      IamInstanceProfile: !Ref InstanceRoleInstanceProfile
+      SecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-GGSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Join ["-", [ "GreengrassCore", !Ref CoreName] ]
+      SubnetId:
+        Fn::ImportValue:
+          !Sub "${CoreName}-PrivateSubnet1"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          export DEBIAN_FRONTEND=noninteractive
+          apt update -y
+          apt upgrade -y
+          apt install python-minimal python-pip -y
+          apt-get update -y
+          apt-get install -y python-setuptools
+          mkdir -p /opt/aws/bin
+          wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          easy_install --script-dir /opt/aws/bin aws-cfn-bootstrap-latest.tar.gz
+          echo "${AWS::StackName}"
+          echo "${AWS::Region}"
+          /opt/aws/bin/cfn-init -v --stack "${AWS::StackName}"  --resource GreengrassInstance  --configsets full_install  --region "${AWS::Region}"
+          sudo apt install openjdk-8-jdk -y
+          sudo apt-get install curl
+          curl -sL https://deb.nodesource.com/setup_12.x | sudo -E bash -
+          sudo apt-get install nodejs
+          pip install greengrasssdk
+          pip install AWSIoTPythonSDK
+          adduser --system ggc_user
+          groupadd --system ggc_group
+          wget https://d1onfpft10uf5o.cloudfront.net/greengrass-core/downloads/1.10.0/greengrass-linux-x86-64-1.10.0.tar.gz
+          tar xzvf greengrass-linux-x86-64-1.10.0.tar.gz -C /
+          echo -n "${IoTThing.certificatePem}" > /greengrass/certs/${IoTThing.certificateId}.pem
+          echo -n "${IoTThing.privateKey}" > /greengrass/certs/${IoTThing.certificateId}.key
+          cd /greengrass/config
+          cat <<EOT > config.json
+          {
+            "coreThing" : {
+              "caPath" : "root.ca.pem",
+              "certPath" : "${IoTThing.certificateId}.pem",
+              "keyPath" : "${IoTThing.certificateId}.key",
+              "thingArn" : "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/${CoreName}_Core",
+              "iotHost" : "${IoTThing.iotEndpoint}",
+              "ggHost" : "greengrass-ats.iot.${AWS::Region}.amazonaws.com"
+            },
+            "runtime" : {
+              "cgroup" : {
+                "useSystemd" : "yes"
+              }
+            },
+            "managedRespawn" : false,
+            "crypto" : {
+              "principals" : {
+                "SecretsManager" : {
+                  "privateKeyPath" : "file:///greengrass/certs/${IoTThing.certificateId}.key"
+                },
+                "IoTCertificate" : {
+                  "privateKeyPath" : "file:///greengrass/certs/${IoTThing.certificateId}.key",
+                  "certificatePath" : "file:///greengrass/certs/${IoTThing.certificateId}.pem"
+                }
+              },
+              "caPath" : "file:///greengrass/certs/root.ca.pem"
+            }
+          }
+          EOT
+          cd /greengrass/certs/
+          wget -O root.ca.pem https://www.amazontrust.com/repository/AmazonRootCA1.pem
+          cd /tmp
+          cat <<EOT > greengrass.service
+          [Unit]
+          Description=greengrass daemon
+          After=network.target
+          [Service]
+          ExecStart=/greengrass/ggc/core/greengrassd start
+          Type=simple
+          RestartSec=2
+          Restart=always
+          User=root
+          PIDFile=/var/run/greengrassd.pid
+          [Install]
+          WantedBy=multi-user.target
+          EOT
+          cp greengrass.service /etc/systemd/system
+          systemctl enable greengrass.service
+          cd /usr/bin
+          sudo cp node nodejs12.x
+          /opt/aws/bin/cfn-signal -e "$?" --stack "${AWS::StackName}" --resource GreengrassInstance --region "${AWS::Region}"
+          reboot
+          /opt/aws/bin/cfn-init -v --stack "${AWS::StackName}"  --resource GreengrassInstance  --configsets full_install  --region "${AWS::Region}"
+
+
+
+
+  IoTThing:
+    # Resource creates thing, certificate key pair, and IoT policy
+    Type: Custom::IoTThing
+    Properties:
+      ServiceToken: !GetAtt CreateThingFunction.Arn
+      ThingName: !Join ["_", [!Ref CoreName, "Core"] ]
+
+  CreateThingFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      #Handler: CreateGreengrassGrp.handler
+      Handler: index.handler
+      MemorySize: 129
+      Runtime: python3.6
+      Timeout: 60
+      #Role: !GetAtt LambdaExecutionRole.Arn
+      Role: !Ref LambdaExecutionRoleArn
+      Code:
+        #S3Bucket: cloudformation-code-x
+        #S3Key: CreateGreengrassGrp.zip
+        ZipFile: |
+          import sys
+          import cfnresponse
+          import boto3
+          from botocore.exceptions import ClientError
+          import json
+          import logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          policyDocument = {
+              'Version': '2012-10-17',
+              'Statement': [
+                  {
+                      'Effect': 'Allow',
+                      'Action': 'iot:*',
+                      'Resource': '*'
+                  },
+                  {
+                      'Effect': 'Allow',
+                      'Action': 'greengrass:*',
+                      'Resource': '*'
+                  }
+              ]
+          }
+          def handler(event, context):
+              responseData = {}
+              try:
+                  logger.info('Received event: {}'.format(json.dumps(event)))
+                  result = cfnresponse.FAILED
+                  client = boto3.client('iot')
+                  thingName = event['ResourceProperties']['ThingName']
+
+                  if event['RequestType'] == 'Create':
+                      thing = client.create_thing(
+                          thingName = thingName
+                      )
+                      response = client.create_keys_and_certificate(
+                          setAsActive=True
+                      )
+                      certId = response['certificateId']
+                      certArn = response['certificateArn']
+                      certPem = response['certificatePem']
+                      privateKey = response['keyPair']['PrivateKey']
+
+                      client.create_policy(
+                          policyName='{}-full-access'.format(thingName),
+                          policyDocument=json.dumps(policyDocument)
+                      )
+                      response = client.attach_policy(
+                          policyName='{}-full-access'.format(thingName),
+                          target=certArn
+                      )
+                      response = client.attach_thing_principal(
+                          thingName=thingName,
+                          principal=certArn,
+                      )
+                      logger.info('Created thing: %s, cert: %s and policy: %s' %
+                          (thingName, certId, '{}-full-access'.format(thingName)))
+                      result = cfnresponse.SUCCESS
+                      responseData['certificateId'] = certId
+                      responseData['certificatePem'] = certPem
+                      responseData['privateKey'] = privateKey
+                      responseData['iotEndpoint'] = client.describe_endpoint(endpointType='iot:Data-ATS')['endpointAddress']
+                  elif event['RequestType'] == 'Update':
+                      logger.info('Updating thing: %s' % thingName)
+                      result = cfnresponse.SUCCESS
+                  elif event['RequestType'] == 'Delete':
+                      logger.info('Deleting thing: %s and cert/policy' % thingName)
+                      response = client.list_thing_principals(
+                          thingName=thingName
+                      )
+                      for i in response['principals']:
+                          response = client.detach_thing_principal(
+                              thingName=thingName,
+                              principal=i
+                          )
+                          response = client.detach_policy(
+                              policyName='{}-full-access'.format(thingName),
+                              target=i
+                          )
+                          response = client.update_certificate(
+                              certificateId=i.split('/')[-1],
+                              newStatus='INACTIVE'
+                          )
+                          response = client.delete_certificate(
+                              certificateId=i.split('/')[-1],
+                              forceDelete=True
+                          )
+                          response = client.delete_policy(
+                              policyName='{}-full-access'.format(thingName),
+                          )
+                          response = client.delete_thing(
+                              thingName=thingName
+                          )
+                      result = cfnresponse.SUCCESS
+              except ClientError as e:
+                  logger.error('Error: {}'.format(e))
+                  result = cfnresponse.FAILED
+              logger.info('Returning response of: {}, with result of: {}'.format(result, responseData))
+              sys.stdout.flush()
+              cfnresponse.send(event, context, result, responseData)
+
+  InstanceRoleInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - Fn::ImportValue:
+            !Sub "${CoreName}-EC2InstanceRoleWithSsm"
+
+Outputs:
+  GreengrassGroupName:
+    Description: A reference to the created VPC
+    Value: !Ref GreengrassGroup
+    Export:
+      Name: !Sub "${CoreName}-GreengrassGroupName"
+
+  IoTThingCertificatId:
+    Value: !GetAtt IoTThing.certificateId
+    Export:
+      Name: !Sub "${CoreName}-IoTThingCertificateId"
+
+  GreengrassGroupId:
+    Value: !GetAtt GreengrassGroup.Id
+    Export:
+      Name: !Sub "${CoreName}-GreengrassGroupId"
+
+#  GreengrassEC2:
+#    Description: Greengrass EC2 Public IP
+#    Value: !GetAtt GreengrassInstance.PublicIp
+#    Export:
+#      Name: !Sub "${CoreName}-GreengrassInstance"
+#
+#  IgnitionEC2:
+#    Condition: CreateProdResources
+#    Description: Ignition EC2 Public IP
+#    Value: !GetAtt IgnitionInstance.PublicIp
+#    Export:
+#      Name: !Sub "${CoreName}-IgnitionInstance"
+#
+#  KepwareEC2:
+#    Condition: CreateProdResources
+#    Description: Kepware EC2 Public IP
+#    Value: !GetAtt KepwareInstance.PublicIp
+#    Export:
+#      Name: !Sub "${CoreName}-KepwareInstance"

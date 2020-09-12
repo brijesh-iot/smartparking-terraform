@@ -1,0 +1,24 @@
+AWSTemplateFormatVersion: 2010-09-09
+#Transform: AWS::Serverless-2016-10-31
+Description: Cloudformation main/parent template to create required infrastructure resources for IoT application.
+
+Parameters:
+
+  CloudFormationTemplatesBucket:
+    Type: String
+    Description: Name of S3 bucket which holds the CloudFormation templates
+
+  CoreName:
+    Description: Name of Greengrass Core
+    Type: String
+    Default: smartparking
+
+Resources:
+
+  RolesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/Roles.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/Roles.yaml"
+      Parameters:
+        CoreName: !Ref CoreName

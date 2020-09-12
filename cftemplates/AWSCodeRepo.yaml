@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creating AWS Code Repositories and S3 buckets.
+
+Parameters:
+
+  EdgeCodeRepoName:
+    Description: Edge Code Repository
+    Type: String
+    Default: edge-repo
+  IoTCoreCodeRepoName:
+    Description: IoT Core Code Repository
+    Type: String
+    Default: iot-core-repo
+  ApiCodeRepoName:
+    Description: API Code Repository
+    Type: String
+    Default: api-repo
+  FrontendCodeRepoName:
+    Description: Frontend Code Repository
+    Type: String
+    Default: frontend-repo
+  SimulationCodeRepoName:
+    Description: Simulation scripts code repository
+    Type: String
+    Default: simulation-scripts-repo
+  IoTResourceS3BucketName:
+    Description: S3 Buckets to store IoT Things Certificates
+    Type: String
+    Default: smartparking-iot-resources
+  IoTArtifactsBucketName:
+    Description: S3 Bucket for Code Artifacts
+    Type: String
+    Default: smartparking-iot-resources
+  ImageId:
+    Description: ImageId of EC2
+    Type: String
+    Default: ami-0520e698dd500b1d1
+  InstanceType:
+    Description: Instace Type of EC2
+    Type: String
+    Default: t3.small
+  MyKeyPair:
+    Description: Amazon EC2 Key Pair for accessing Greengrass Core instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: Ansible-EC2
+  SecurityGroupId:
+    Description: Security Group Id
+    Type: String
+    Default: sg-0e61f5048201f7720
+  SubnetId:
+    Description: Subnet Id
+    Type: String
+    Default: subnet-014a2b1d8d81568f3
+
+Resources:
+
+  EdgeCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref EdgeCodeRepoName
+
+  IoTCoreCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref IoTCoreCodeRepoName
+
+  ApiCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref ApiCodeRepoName
+
+  FrontendCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref FrontendCodeRepoName
+
+  SimulationCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref SimulationCodeRepoName
+
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "artifacts-${AWS::AccountId}-${AWS::Region}"
+      AccessControl: "BucketOwnerFullControl"
+  
+  #IoTResourceS3Bucket:
+  #  Type: AWS::S3::Bucket
+  #  Properties:
+  #    BucketName: !Ref IoTResourceS3BucketName
+  #    AccessControl: "BucketOwnerFullControl"
+  #
+  ##AnsibleInstance:
+  #  Type: "AWS::EC2::Instance"
+  #  Properties:
+  #    ImageId: !Ref ImageId
+  #    InstanceType: !Ref InstanceType
+  #    KeyName: !Ref MyKeyPair
+  #    SecurityGroupIds:
+  #      - !Ref SecurityGroupId
+  #    Tags:
+  #      - Key: Name
+  #        Value: AnsibleRHEL8
+  #    SubnetId: !Ref SubnetId
+  #    UserData:
+  #      Fn::Base64: !Sub |
+  #        #!/bin/bash
+  #        sudo yum update -y
+  #        sudo yum install python3 -y
+  #        sudo alternatives --set python /usr/bin/python3
+  #        sudo yum -y install python3-pip
+  #        pip3 install ansible --user
+

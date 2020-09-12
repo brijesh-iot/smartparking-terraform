@@ -1,0 +1,274 @@
+AWSTemplateFormatVersion: 2010-09-09
+#Transform: AWS::Serverless-2016-10-31
+Description: Cloudformation main/parent template to create required infrastructure resources for IoT application.
+
+Parameters:
+
+  MyKeyPair:
+    Description: Amazon EC2 Key Pair for accessing Greengrass Core instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+    Default: smartparking
+
+  CoreName:
+    Description: Name of Greengrass Core
+    Type: String
+    Default: smartparking
+
+  GGInstanceType:
+    Description: Greengrass EC2 instance size
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+
+  SimulatorInstanceType:
+    Description: Greengrass EC2 instance size
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+
+  KepwareInstanceType:
+    Description: Kepware EC2 instance size
+    Type: String
+    Default: t2.xlarge
+    AllowedValues:
+      - t2.xlarge
+      - t2.medium
+  
+  IgnitionInstanceType:
+    Description: Ignition EC2 instance size
+    Type: String
+    Default: t2.large
+    AllowedValues:
+      - t2.large
+      - t2.xlarge
+
+  CloudFormationTemplatesBucket:
+    Type: String
+    Description: Name of S3 bucket which holds the CloudFormation templates
+
+# Parameters required for the deployment at Greengrass Edge.
+
+  EdgeCodeRepoName:
+    Description: Edge Code Repository
+    Type: String
+    Default: smartparking-edge-repo
+
+  BuildComputeType:
+    Type: String
+    Description: Instance Type to use for build
+    Default: BUILD_GENERAL1_SMALL
+
+  BuildImagePython:
+    Type: String
+    Description: Docker image to use for build
+    Default: aws/codebuild/python:3.7.1
+
+# Parameters required for the deployment at IoT Core.
+
+  IoTCoreCodeRepoName:
+    Type: String
+    Description: Name of Existing Code repository in AWS CodeCommit for IoT Core
+    Default: smartparking-iot-core-repo
+
+# Parameters required for the deployment at API Backend layer.
+
+  IoTApiCodeRepoName:
+    Type: String
+    Description: Name of Existing Code repository in AWS CodeCommit for APIs.
+    Default: smartparking-api-repo
+
+  SimulationRepoName:
+    Type: String
+    Description: Code Repository for Device Simulator scripts.
+    Default: smartparking-simulators
+
+  DocumentationRepoName:
+    Type: String
+    Description: Code Repository for documents.
+    Default: smartparking-docs
+
+  AngularParkingAppCodeRepoName:
+    Type: String
+    Description: Name of Existing Code repository for Frontend Web App.
+    Default: smartparking-angular-app
+
+  GitHubOwner:
+    Type: String
+    Description: Username of GiiHub Account
+
+  EnvType:
+    Description: Environment type.
+    Default: test
+    Type: String
+    AllowedValues:
+      - prod
+      - test
+    ConstraintDescription: must specify prod or test.
+
+  RepoType:
+    Description: Type of Code Repository to use.
+    Default: GitHub
+    Type: String
+    AllowedValues:
+      - GitHub
+      - AWS
+    ConstraintDescription: Must specify GitHub or AWS.
+
+Conditions: 
+  CreateProdResources: !Equals [ !Ref EnvType, prod ]
+  CreateGitHubRepository: !Equals [ !Ref RepoType, GitHub ]
+  CreateAWSRepository: !Equals [ !Ref RepoType, AWS ]
+
+Resources:
+
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+
+  IoTResourceS3Bucket:
+    Type: AWS::S3::Bucket
+
+# Code Repositories
+
+  EdgeCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Condition: CreateAWSRepository
+    Properties:
+      RepositoryName: !Ref EdgeCodeRepoName
+      RepositoryDescription: Code Repository for Edge.
+
+  IoTCoreCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Condition: CreateAWSRepository
+    Properties:
+      RepositoryName: !Ref IoTCoreCodeRepoName
+      RepositoryDescription: Code Repository for IoT Core.
+
+  IoTApiCodeRepo:
+    Type: AWS::CodeCommit::Repository
+    Condition: CreateAWSRepository
+    Properties:
+      RepositoryName: !Ref IoTApiCodeRepoName
+      RepositoryDescription: Code Repository for APIs.
+
+  DocumentationRepo:
+    Type: AWS::CodeCommit::Repository
+    Condition: CreateAWSRepository
+    Properties:
+      RepositoryName: !Ref DocumentationRepoName
+      RepositoryDescription: Code Repository for Documents.
+
+  SimulationRepo:
+    Type: AWS::CodeCommit::Repository
+    Condition: CreateAWSRepository
+    Properties:
+      RepositoryName: !Ref SimulationRepoName
+      RepositoryDescription: Code Repository for Device Simulators.
+
+  RolesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/Roles.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/Roles.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+
+  VPCstack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: RolesStack
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/VPC.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/VPC.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+
+  MySqlDbStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VPCstack
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/MySqlDb.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/MySqlDb.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+
+  EC2EdgeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ VPCstack, RolesStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/EC2-edge.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/EC2-edge.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        MyKeyPair: !Ref MyKeyPair
+        LambdaExecutionRoleArn: !GetAtt RolesStack.Outputs.LambdaExecutionRoleArn
+        GreengrassResourceRoleArn: !GetAtt RolesStack.Outputs.GreengrassResourceRoleArn
+        GGInstanceType: !Ref GGInstanceType
+        KepwareInstanceType: !Ref KepwareInstanceType
+        IgnitionInstanceType: !Ref IgnitionInstanceType
+        EnvType: !Ref EnvType
+
+  EC2SimulatorEdgeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ VPCstack, RolesStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/EC2-edge.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/EC2-Simulator.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        MyKeyPair: !Ref MyKeyPair
+        InstanceType: !Ref SimulatorInstanceType
+
+  EdgeBuildDeployStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ EC2EdgeStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/EdgeBuildDeploy.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/EdgeBuildDeploy.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        EdgeCodeRepoName: !Ref EdgeCodeRepoName
+        BuildComputeType: !Ref BuildComputeType
+        BuildImagePython: !Ref BuildImagePython
+        PipelineArtifactsBucket: !Ref PipelineArtifactsBucket
+        IoTResourceS3Bucket: !Ref IoTResourceS3Bucket
+        GitHubOwner: !Ref GitHubOwner
+        RepoType: !Ref RepoType
+
+  IoTCoreBuildDeployStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ EC2EdgeStack, EdgeBuildDeployStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/IoTCoreBuildDeploy.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/IoTCoreBuildDeploy.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        IoTCoreCodeRepoName: !Ref IoTCoreCodeRepoName
+        PipelineArtifactsBucket: !Ref PipelineArtifactsBucket
+        GitHubOwner: !Ref GitHubOwner
+        RepoType: !Ref RepoType
+
+  ApiBuildDeployStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ EC2EdgeStack, EdgeBuildDeployStack, IoTCoreBuildDeployStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/ApiBuildDeploy.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/ApiBuildDeploy.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        IoTApiCodeRepoName: !Ref IoTApiCodeRepoName
+        PipelineArtifactsBucket: !Ref PipelineArtifactsBucket
+        GitHubOwner: !Ref GitHubOwner
+        RepoType: !Ref RepoType
+
+  AngularParkingAppDeployStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: [ EC2EdgeStack, EdgeBuildDeployStack, IoTCoreBuildDeployStack, ApiBuildDeployStack ]
+    Properties:
+      #TemplateURL: https://smartparking-cf-templates-v1.s3-us-west-2.amazonaws.com/ApiBuildDeploy.yaml
+      TemplateURL: !Sub "https://${CloudFormationTemplatesBucket}.s3.amazonaws.com/AngularParkingApp.yaml"
+      Parameters:
+        CoreName: !Ref CoreName
+        RepositoryName: !Ref AngularParkingAppCodeRepoName
+        PipelineArtifactsBucket: !Ref PipelineArtifactsBucket
+        GitHubOwner: !Ref GitHubOwner
